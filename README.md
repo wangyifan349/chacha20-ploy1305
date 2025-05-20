@@ -70,16 +70,15 @@ python your_script.py
 | Ciphertext               | Variable     | The encrypted file contents 🛡️         |
 
 ---
-
 ## ⚠️ Security Notes
 
 - Use a cryptographically secure **32-byte key** 🔑.
-- **Never reuse nonce with the same key** (causes catastrophic failure).
+- **Never reuse nonce with the same key** (this causes catastrophic failure).
 - The nonce is 12 bytes and must be unique per file.
 - Poly1305 tag failure immediately stops decryption of that file ❌.
 - Currently no support for Additional Authenticated Data (AAD).
+- **⚠️ Important:** Before running on your own valuable data, **please test thoroughly on non-critical files first** to ensure expected behavior and prevent accidental data loss!
 - Intended for learning or personal use; audit carefully before production.
-
 ---
 
 ## 🛠️ Dependencies
@@ -97,9 +96,6 @@ See the [LICENSE](./LICENSE) file for details.
 ---
 
 ## 🙋 Author
-
-王一帆
-
 wangyifan349@gmail.com
 
 wangyifan1999@protonmail.com

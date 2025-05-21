@@ -1,29 +1,23 @@
 import os
 import struct
 
-def rotl(x, n):
-    """Rotate 32-bit integer x left by n bits."""
+def rotl(x: int, n: int) -> int:
+    """Rotate left a 32-bit integer x by n bits."""
     return ((x << n) & 0xffffffff) | (x >> (32 - n))
 
 def chacha20_block(key: bytes, counter: int, nonce: bytes) -> bytes:
     """
-    Produce a single 64-byte ChaCha20 key stream block.
-    - key: 32-byte symmetric key
-    - counter: 32-bit block counter
-    - nonce: 12-byte nonce
-    Returns 64 bytes of key stream.
+    Compute a single 64-byte ChaCha20 key stream block.
     """
     constants = b"expand 32-byte k"
     const_words = struct.unpack("<4I", constants)
     key_words = struct.unpack("<8I", key)
     nonce_words = struct.unpack("<3I", nonce)
 
-    # Initialize ChaCha20 state with constants, key, counter and nonce (16 words)
     state = list(const_words + key_words + (counter,) + nonce_words)
     working = state.copy()
 
-    def quarterround(x, a, b, c, d):
-        """Perform ChaCha20 quarter round operation on elements a,b,c,d of x in place."""
+    def quarter_round(x, a, b, c, d):
         x[a] = (x[a] + x[b]) & 0xffffffff
         x[d] ^= x[a]
         x[d] = rotl(x[d], 16)
@@ -40,182 +34,156 @@ def chacha20_block(key: bytes, counter: int, nonce: bytes) -> bytes:
         x[b] ^= x[c]
         x[b] = rotl(x[b], 7)
 
-    # Execute 20 rounds: 10 iterations of double rounds (column + diagonal)
-    for _ in range(10):
+    iteration = 0
+    while iteration < 10:
         # Column rounds
-        quarterround(working, 0, 4, 8, 12)
-        quarterround(working, 1, 5, 9, 13)
-        quarterround(working, 2, 6, 10, 14)
-        quarterround(working, 3, 7, 11, 15)
+        quarter_round(working, 0, 4, 8, 12)
+        quarter_round(working, 1, 5, 9, 13)
+        quarter_round(working, 2, 6, 10, 14)
+        quarter_round(working, 3, 7, 11, 15)
         # Diagonal rounds
-        quarterround(working, 0, 5, 10, 15)
-        quarterround(working, 1, 6, 11, 12)
-        quarterround(working, 2, 7, 8, 13)
-        quarterround(working, 3, 4, 9, 14)
+        quarter_round(working, 0, 5, 10, 15)
+        quarter_round(working, 1, 6, 11, 12)
+        quarter_round(working, 2, 7, 8, 13)
+        quarter_round(working, 3, 4, 9, 14)
+        iteration += 1
 
-    # Add original state to the working state (mod 2^32)
-    output_words = [(working[i] + state[i]) & 0xffffffff for i in range(16)]
-    # Pack result as 64 bytes little-endian
+    output_words = []
+    idx = 0
+    while idx < 16:
+        output_words.append((working[idx] + state[idx]) & 0xffffffff)
+        idx += 1
+
     return struct.pack("<16I", *output_words)
 
 def chacha20_crypt(key: bytes, nonce: bytes, counter: int, data: bytes) -> bytes:
     """
-    Encrypt or decrypt arbitrary-length data with ChaCha20 by XOR with key stream.
-    - key: 32-byte key
-    - nonce: 12-byte nonce
-    - counter: initial 32-bit block counter (usually 1 for encryption)
-    - data: plaintext or ciphertext
-    Returns: output bytes of same length as input.
+    ChaCha20 encryption/decryption: XOR data with keystream.
     """
     output = bytearray()
-    n_blocks = (len(data) + 63) // 64  # Calculate number of 64-byte blocks, rounded up
-    for block_idx in range(n_blocks):
-        block = data[block_idx*64 : (block_idx+1)*64]
-        keystream = chacha20_block(key, counter + block_idx, nonce)
-        for i in range(len(block)):
-            output.append(block[i] ^ keystream[i])
+    data_length = len(data)
+    block_count = (data_length + 63) // 64
+
+    block_index = 0
+    while block_index < block_count:
+        block_start = block_index * 64
+        block_end = block_start + 64
+        block = data[block_start:block_end]
+        keystream = chacha20_block(key, counter + block_index, nonce)
+
+        byte_index = 0
+        while byte_index < len(block):
+            output.append(block[byte_index] ^ keystream[byte_index])
+            byte_index += 1
+
+        block_index += 1
+
     return bytes(output)
 
 def poly1305_clamp_r_s(key: bytes):
     """
-    Clamp the r portion of Poly1305 key and separate r and s as integers.
-    - key: 32-byte Poly1305 key = r(16 bytes) || s(16 bytes)
-    Returns (r_int, s_int) as big integers.
+    Clamp the Poly1305 'r' portion and return integers r and s.
     """
-    r = bytearray(key[:16])
-    s = key[16:]
+    r_bytes = bytearray(key[:16])
+    s_bytes = key[16:]
 
-    # Clamp r per Poly1305 specification to reduce weaknesses
-    r[3]  &= 0x0f
-    r[7]  &= 0x0f
-    r[11] &= 0x0f
-    r[15] &= 0x0f
-    r[4]  &= 0xfc
-    r[8]  &= 0xfc
-    r[12] &= 0xfc
+    r_bytes[3] &= 0x0f
+    r_bytes[7] &= 0x0f
+    r_bytes[11] &= 0x0f
+    r_bytes[15] &= 0x0f
+    r_bytes[4] &= 0xfc
+    r_bytes[8] &= 0xfc
+    r_bytes[12] &= 0xfc
 
-    r_int = int.from_bytes(r, "little")
-    s_int = int.from_bytes(s, "little")
+    r_int = int.from_bytes(r_bytes, "little")
+    s_int = int.from_bytes(s_bytes, "little")
     return r_int, s_int
 
 def poly1305_mac(key: bytes, msg: bytes) -> bytes:
     """
-    Compute Poly1305 message authentication code (MAC) for given message.
-    - key: 32-byte Poly1305 key (r and s)
-    - msg: message to authenticate
-    Returns 16-byte authentication tag.
+    Compute the Poly1305 authentication tag.
     """
     r, s = poly1305_clamp_r_s(key)
-    p = (1 << 130) - 5  # Prime modulus for Poly1305
-    acc = 0             # Initialize accumulator to zero
+    prime_p = (1 << 130) - 5
+    accumulator = 0
 
-    # Process message in 16-byte blocks
-    for i in range(0, len(msg), 16):
-        block = msg[i:i+16]
-        # Pad block with zeros if less than 16 bytes
+    msg_idx = 0
+    msg_len = len(msg)
+    while msg_idx < msg_len:
+        block = msg[msg_idx:msg_idx + 16]
         if len(block) < 16:
-            block += b"\x00" * (16 - len(block))
+            block = block + (b"\x00" * (16 - len(block)))
+        n = int.from_bytes(block, "little") + (1 << 128)
+        accumulator = (accumulator + n) % prime_p
+        accumulator = (accumulator * r) % prime_p
+        msg_idx += 16
 
-        # Interpret block as a 128-bit little-endian integer
-        n = int.from_bytes(block, "little")
-        # Add 2^128 to the block number per Poly1305 spec (high bit)
-        n += 1 << 128
-
-        # Modular addition and multiplication with accumulator and r
-        acc = (acc + n) % p
-        acc = (acc * r) % p
-
-    # Final tag is accumulator plus s modulo 2^128
-    tag = (acc + s) % (1 << 128)
-    # Convert tag to 16-byte little-endian bytes
-    return tag.to_bytes(16, "little")
+    tag_num = (accumulator + s) % (1 << 128)
+    return tag_num.to_bytes(16, "little")
 
 def pad16(data: bytes) -> bytes:
-    """Pad bytes to a multiple of 16 bytes by appending zero bytes."""
-    pad_len = (16 - (len(data) % 16)) % 16
-    if pad_len == 0:
+    """
+    Pad data with zero bytes to a 16-byte multiple.
+    """
+    padding_len = 16 - (len(data) % 16)
+    if padding_len == 16:
         return data
-    return data + (b"\x00" * pad_len)
+    else:
+        return data + (b"\x00" * padding_len)
 
 def u64_le(n: int) -> bytes:
-    """Encode integer n as 8-byte little-endian bytes."""
+    """Encode integer as 8-byte little-endian bytes."""
     return struct.pack("<Q", n)
 
-def chacha20_poly1305_encrypt(key: bytes, nonce: bytes, plaintext: bytes):
-    """
-    Encrypt plaintext using ChaCha20-Poly1305 (without AAD).
-    Procedure:
-      1. Generate Poly1305 key by encrypting 32 bytes from block with counter=0.
-      2. Encrypt plaintext starting with counter=1.
-      3. Compute Poly1305 tag over (AAD||padding||ciphertext||padding||lengths).
-       AAD is empty here.
-    Returns (ciphertext, 16-byte tag).
-    """
-    poly_key = chacha20_block(key, 0, nonce)[:32]
-
+def chacha20_poly1305_encrypt(key: bytes, nonce: bytes, plaintext: bytes, aad: bytes = b""):
+    """ChaCha20-Poly1305 AEAD encryption."""
+    poly1305_key = chacha20_block(key, 0, nonce)[:32]
     ciphertext = chacha20_crypt(key, nonce, 1, plaintext)
 
-    aad = b""
-    poly_msg = pad16(aad) + pad16(ciphertext) + u64_le(len(aad)) + u64_le(len(ciphertext))
+    mac_data = pad16(aad) + pad16(ciphertext) + u64_le(len(aad)) + u64_le(len(ciphertext))
 
-    tag = poly1305_mac(poly_key, poly_msg)
+    tag = poly1305_mac(poly1305_key, mac_data)
     return ciphertext, tag
 
-def chacha20_poly1305_decrypt(key: bytes, nonce: bytes, ciphertext: bytes, tag: bytes):
-    """
-    Decrypt and verify ChaCha20-Poly1305 ciphertext without AAD.
-    Raises ValueError if authentication fails.
-    Returns original plaintext if verification passes.
-    """
-    poly_key = chacha20_block(key, 0, nonce)[:32]
+def chacha20_poly1305_decrypt(key: bytes, nonce: bytes, ciphertext: bytes, tag: bytes, aad: bytes = b""):
+    """ChaCha20-Poly1305 AEAD decryption and verification."""
+    poly1305_key = chacha20_block(key, 0, nonce)[:32]
 
-    aad = b""
-    poly_msg = pad16(aad) + pad16(ciphertext) + u64_le(len(aad)) + u64_le(len(ciphertext))
+    mac_data = pad16(aad) + pad16(ciphertext) + u64_le(len(aad)) + u64_le(len(ciphertext))
 
-    calc_tag = poly1305_mac(poly_key, poly_msg)
-    if calc_tag != tag:
+    calculated_tag = poly1305_mac(poly1305_key, mac_data)
+    if calculated_tag != tag:
         raise ValueError("Poly1305 authentication failed!")
 
     plaintext = chacha20_crypt(key, nonce, 1, ciphertext)
     return plaintext
 
-def encrypt_file(in_filepath: str, key: bytes):
-    """
-    Encrypt a single file in place.
-    File format after encryption:
-    [12-byte nonce || 16-byte Poly1305 tag || ciphertext]
-    Original file access and modification times are preserved.
-    """
+def encrypt_file(file_path: str, key: bytes):
+    """Encrypt a single file in place."""
     nonce = os.urandom(12)
 
-    stat = os.stat(in_filepath)
-    atime = stat.st_atime
-    mtime = stat.st_mtime
+    stat_info = os.stat(file_path)
+    atime = stat_info.st_atime
+    mtime = stat_info.st_mtime
 
-    with open(in_filepath, "rb") as f:
-        plaintext = f.read()
+    with open(file_path, "rb") as file:
+        plaintext = file.read()
 
     ciphertext, tag = chacha20_poly1305_encrypt(key, nonce, plaintext)
 
-    with open(in_filepath, "wb") as f:
-        f.write(nonce + tag + ciphertext)
+    with open(file_path, "wb") as file:
+        file.write(nonce + tag + ciphertext)
 
-    os.utime(in_filepath, (atime, mtime))
+    os.utime(file_path, (atime, mtime))
 
-def decrypt_file(in_filepath: str, key: bytes):
-    """
-    Decrypt a single file in place.
-    Expects file format:
-    [12-byte nonce || 16-byte Poly1305 tag || ciphertext]
-    Raises ValueError if authentication fails.
-    Restores original file access and modification times after decryption.
-    """
-    stat = os.stat(in_filepath)
-    atime = stat.st_atime
-    mtime = stat.st_mtime
+def decrypt_file(file_path: str, key: bytes):
+    """Decrypt a single file in place."""
+    stat_info = os.stat(file_path)
+    atime = stat_info.st_atime
+    mtime = stat_info.st_mtime
 
-    with open(in_filepath, "rb") as f:
-        content = f.read()
+    with open(file_path, "rb") as file:
+        content = file.read()
 
     nonce = content[:12]
     tag = content[12:28]
@@ -223,64 +191,69 @@ def decrypt_file(in_filepath: str, key: bytes):
 
     plaintext = chacha20_poly1305_decrypt(key, nonce, ciphertext, tag)
 
-    with open(in_filepath, "wb") as f:
-        f.write(plaintext)
+    with open(file_path, "wb") as file:
+        file.write(plaintext)
 
-    os.utime(in_filepath, (atime, mtime))
+    os.utime(file_path, (atime, mtime))
 
-def encrypt_directory(input_dir: str, key: bytes):
-    """
-    Recursively encrypt all files in the directory, in-place.
-    Files are overwritten with encrypted content.
-    Original file names and timestamps are preserved.
-    Errors are printed but do not stop processing.
-    """
-    for root, dirs, files in os.walk(input_dir):
-        for filename in files:
-            filepath = os.path.join(root, filename)
+def encrypt_directory(input_directory: str, key: bytes):
+    """Recursively encrypt all files in a directory in place."""
+    for current_root, directories, files in os.walk(input_directory):
+        file_index = 0
+        while file_index < len(files):
+            filename = files[file_index]
+            filepath = os.path.join(current_root, filename)
             try:
                 encrypt_file(filepath, key)
                 print(f"Encrypted: {filepath}")
-            except Exception as e:
-                print(f"Encrypt failed: {filepath} - {e}")
+            except Exception as exc:
+                print(f"Encrypt failed: {filepath} - {exc}")
+            file_index += 1
 
-def decrypt_directory(input_dir: str, key: bytes):
-    """
-    Recursively decrypt all files in the directory, in-place.
-    Files are overwritten with decrypted content.
-    Original file names and timestamps are preserved.
-    Errors (e.g. auth failure) are printed but do not stop processing.
-    """
-    for root, dirs, files in os.walk(input_dir):
-        for filename in files:
-            filepath = os.path.join(root, filename)
+def decrypt_directory(input_directory: str, key: bytes):
+    """Recursively decrypt all files in a directory in place."""
+    for current_root, directories, files in os.walk(input_directory):
+        file_index = 0
+        while file_index < len(files):
+            filename = files[file_index]
+            filepath = os.path.join(current_root, filename)
             try:
                 decrypt_file(filepath, key)
                 print(f"Decrypted: {filepath}")
-            except Exception as e:
-                print(f"Decrypt failed: {filepath} - {e}")
+            except Exception as exc:
+                print(f"Decrypt failed: {filepath} - {exc}")
+            file_index += 1
 
-# Main interactive section:
+# Sample key bytes (replace with your own secure key).
+key = b'\x18\xe7\xc6\x14\xf0\xc9\xd2a\x04\xd9\xcf3\xc6\xb5\x1c\xc1\nQ\xec\xdbhd\xbe\x12\xcb\x08\x86\x9a\x05\xe7\xedO'
 
-key = b"your 32 bytes key here______________"  # Must be exactly 32 bytes. Please verify length.
+"""
+# To generate a random key and print in hex format:
+import os
+
+key = os.urandom(32)
+hex_key = key.hex()
+print(f"Generated key (hex): {hex_key}")
+"""
+
 if len(key) != 32:
-    print("Error: Key length must be exactly 32 bytes!")
+    print("Error: Key length must be 32 bytes!")
     exit(1)
 
-input_dir = input("Please enter the target directory path: ").strip()
-if not os.path.isdir(input_dir):
-    print(f"Error: Directory does not exist: {input_dir}")
+target_directory = input("Please enter the target directory path: ").strip()
+if not os.path.isdir(target_directory):
+    print(f"Error: Directory does not exist: {target_directory}")
     exit(1)
 
-op = input("Please enter operation type (e: encrypt, d: decrypt): ").strip().lower()
-if op == "e":
-    print(f"Starting encryption on directory: {input_dir}")
-    encrypt_directory(input_dir, key)
-    print("Encryption completed.")
-elif op == "d":
-    print(f"Starting decryption on directory: {input_dir}")
-    decrypt_directory(input_dir, key)
-    print("Decryption completed.")
+operation = input("Please enter operation type (e: encrypt, d: decrypt): ").strip().lower()
+if operation == "e":
+    print(f"Starting encryption of directory: {target_directory}")
+    encrypt_directory(target_directory, key)
+    print("Encryption completed")
+elif operation == "d":
+    print(f"Starting decryption of directory: {target_directory}")
+    decrypt_directory(target_directory, key)
+    print("Decryption completed")
 else:
-    print("Error: Unsupported operation type. Please enter 'e' or 'd'.")
+    print("Error: Operation type only supports e (encrypt) or d (decrypt)")
     exit(1)

@@ -2,100 +2,101 @@
 
 ## 🚀 Overview
 
-This Python tool implements the **ChaCha20-Poly1305** authenticated encryption algorithm according to [RFC 8439](https://tools.ietf.org/html/rfc8439), designed for **recursive, in-place encryption/decryption** of all files inside a directory. Filenames and timestamps are preserved during processing.
+This Python script implements the **ChaCha20-Poly1305** authenticated encryption algorithm following [RFC 8439](https://tools.ietf.org/html/rfc8439), designed for **recursive, in-place encryption and decryption** of all files within a directory. It preserves filenames and timestamps during processing.
 
 ---
 
-## 🔑 Core Algorithm Workflow
+## 💡 How It Works
 
-1. 🎲 **Nonce generation**: For each file encrypted, a fresh, random 12-byte nonce is generated to ensure uniqueness.
+1. 🎲 **Nonce Generation**  
+   Generates a fresh, random 12-byte nonce for each file to guarantee uniqueness.
 
-2. 🔐 **Poly1305 key derivation**: Encrypt a 32-byte zero block with ChaCha20 (`counter=0`) using the file's nonce and key to derive the Poly1305 key (`r` and `s`).
+2. 🔑 **Poly1305 Key Derivation**  
+   Derives the Poly1305 key by encrypting a zero block with ChaCha20 (counter=0) using the file’s nonce and key.
 
-3. 🛡️ **Encryption**: Encrypt the plaintext content with ChaCha20 starting at block counter 1, producing ciphertext.
+3. 🔐 **Encryption**  
+   Encrypts the plaintext with ChaCha20 (starting block counter 1), producing the ciphertext.
 
-4. 📋 **Authentication tag calculation**:
-   - Calculate a **Poly1305 tag** over:
-     - Additional Authenticated Data (AAD): empty in this version.
-     - Padding to 16-byte boundaries.
-     - Ciphertext.
-     - Length fields for AAD and ciphertext.
-   - This tag ensures data integrity 🔍 and authenticity ✅.
+4. 🛡️ **Authentication Tag Creation**  
+   Calculates a Poly1305 tag over:  
+   - Additional Authenticated Data (empty in this version)  
+   - Proper padding  
+   - Ciphertext  
+   - Length fields for AAD & ciphertext  
+   This ensures integrity and authenticity.
 
-5. 💾 **File output**: The encrypted file format:
-   
+5. 💾 **Encrypted File Format**  
+   The original file is overwritten with:  
    ```
-   [ 12-byte nonce ] || [ 16-byte Poly1305 tag ] || [ ciphertext ]
+   [12-byte nonce] || [16-byte Poly1305 tag] || [ciphertext]
    ```
-   
-   The original file is overwritten with this encrypted blob.
 
-6. 🔄 **Decryption**:
-   - Extract nonce, tag, and ciphertext from file.
-   - Verify Poly1305 tag — decryption aborts if verification fails ❌.
-   - Decrypt ciphertext back to plaintext using ChaCha20.
-   - Overwrite original file with decrypted content.
+6. 🔄 **Decryption**  
+   Extracts nonce, tag, ciphertext → verifies tag → decrypts ciphertext → overwrites with plaintext. Aborts if authentication fails.
 
 ---
 
-## 📂 Usage
+## ⚙️ Usage Instructions
 
-1. Set your symmetric key in the script:
+1. Set your **32-byte key** in the script:  
+   ```python
+   key = b'your 32 bytes key here__________'  # Exactly 32 bytes!
+   ```  
+   Or generate a secure random key:  
+   ```python
+   import os
+   key = os.urandom(32)
+   print(f"Your key (hex): {key.hex()}")
+   ```
 
-```python
-key = b"your 32 bytes key here______________"  # EXACTLY 32 bytes 🔐
-```
+2. Run the script:  
+   ```bash
+   python chacha20-poly1305.py
+   ```
 
-2. Run the script:
+3. Follow prompts to:  
+   - Enter the target directory path  
+   - Choose operation:  
+     - `e` for encrypt all files recursively 🔒  
+     - `d` for decrypt all files recursively 🔓
 
-```bash
-python your_script.py
-```
+---
 
-3. Follow prompts:
+## 📂 File Format Summary
 
-- Enter **directory path** to encrypt/decrypt recursively.
-- Select operation:
-  - `e` — encrypt all files recursively 🔒
-  - `d` — decrypt all files recursively 🔓
+| Component                 | Size (Bytes) | Description                      |
+|---------------------------|--------------|--------------------------------|
+| Nonce                     | 12           | Unique per file nonce           |
+| Poly1305 Authentication Tag | 16           | Data integrity & authenticity  |
+| Ciphertext                | Variable     | Encrypted file contents        |
 
 ---
 
-## 📁 File Format Details
+## ⚠️ Security Considerations
 
-| Component                | Size (Bytes) | Description                          |
-|--------------------------|--------------|------------------------------------|
-| Nonce                    | 12           | Unique random nonce per file 🔄      |
-| Poly1305 Authentication Tag | 16           | Ensures integrity and authenticity ✅ |
-| Ciphertext               | Variable     | The encrypted file contents 🛡️         |
+- Always use a **cryptographically secure 32-byte key**.  
+- **Do NOT reuse nonces with the same key**, as this breaks security guarantees.  
+- Poly1305 tag verification failures abort decryption to protect integrity.  
+- This version does **not support Additional Authenticated Data (AAD)**.  
+- **Test carefully on non-critical data before real usage!**  
+- For personal or educational use; **audit thoroughly before production deployment**.
 
 ---
-## ⚠️ Security Notes
 
-- Use a cryptographically secure **32-byte key** 🔑.
-- **Never reuse nonce with the same key** (this causes catastrophic failure).
-- The nonce is 12 bytes and must be unique per file.
-- Poly1305 tag failure immediately stops decryption of that file ❌.
-- Currently no support for Additional Authenticated Data (AAD).
-- **⚠️ Important:** Before running on your own valuable data, **please test thoroughly on non-critical files first** to ensure expected behavior and prevent accidental data loss!
-- Intended for learning or personal use; audit carefully before production.
----
+## 🛠 Dependencies
 
-## 🛠️ Dependencies
-
-- Python 3.6 or newer
-- Standard libraries: `os`, `struct`
+- Python 3.6+  
+- Standard Python libraries: `os`, `struct`
 
 ---
 
 ## 📜 License
 
-This project is licensed under the **MIT License**.  
-See the [LICENSE](./LICENSE) file for details.
+MIT License. See [LICENSE](./LICENSE) for details.
 
 ---
 
 ## 🙋 Author
-wangyifan349@gmail.com
 
+wangyifan349@gmail.com  
 wangyifan1999@protonmail.com

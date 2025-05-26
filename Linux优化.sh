@@ -178,6 +178,59 @@ echo "fs.may_detach_mounts=0" | sudo tee -a /etc/sysctl.conf  # 禁止卸载挂�
 
 
 
+echo "禁用ICMP重定向..."
+sudo bash -c 'echo "net.ipv4.conf.all.accept_redirects = 0" >> /etc/sysctl.conf'
+echo "禁用Telnet服务..."
+sudo systemctl stop telnet.socket  # 停止Telnet服务
+sudo systemctl disable telnet.socket  # 禁用Telnet服务
+echo "禁用NetBIOS..."
+sudo bash -c 'echo "netbios name = " >> /etc/samba/smb.conf'  # 清空NetBIOS名称
+sudo systemctl stop nmbd  # 停止NetBIOS服务
+sudo systemctl disable nmbd  # 禁用NetBIOS服务
+echo "禁用NetBIOS..."
+sudo bash -c 'echo "netbios name = " >> /etc/samba/smb.conf'  # 清空NetBIOS名称
+sudo systemctl stop nmbd  # 停止NetBIOS服务
+sudo systemctl disable nmbd  # 禁用NetBIOS服务
+
+
+
+# 1. 禁用窗口动画
+echo "禁用窗口动画..."
+gsettings set org.gnome.desktop.interface enable-animations false
+# 2. 禁用特效
+echo "禁用Compiz特效..."
+gsettings set org.compiz.core:/org/compiz/profiles/unity/plugins/core/ active-plugins "['place', 'move', 'resize', 'scale', 'rotate', 'wall', 'cube', 'fade', 'expo', 'zoom', 'animation', 'composite', 'decoration']"
+# 3. 调整窗口缩放
+echo "调整窗口缩放..."
+gsettings set org.gnome.desktop.interface scaling-factor 1
+# 4. 禁用桌面图标动画
+echo "禁用桌面图标的动画效果..."
+gsettings set org.gnome.desktop.background show-desktop-icons false
+# 5. 调整窗口最大化和最小化的动画
+echo "将窗口最大化和最小化的动画时间设置为0..."
+gsettings set org.gnome.desktop.wm.preferences minimize-animation false
+gsettings set org.gnome.desktop.wm.preferences maximize-animation false
+# 6. 禁用窗口预览
+echo "禁用窗口预览..."
+gsettings set org.gnome.desktop.wm.preferences show-window-previews false
+# 7. 调整鼠标指针速度
+echo "提高鼠标指针的速度..."
+xset r rate 200 50  # 设置重复速率和延迟
+# 8. 禁用启动时的动画
+echo "禁用启动时的动画效果..."
+sudo systemctl set-default multi-user.target  # 设置为多用户模式，禁用图形界面
+# 9. 使用轻量级桌面环境
+echo "安装轻量级桌面环境..."
+sudo apt install xubuntu-desktop  # 安装XFCE桌面环境
+# 10. 清理系统
+echo "定期清理系统以释放磁盘空间..."
+sudo apt autoremove  # 自动删除不再需要的包
+sudo apt clean  # 清理本地存储的包文件
+# 12. 启用硬件加速
+echo "确保启用硬件加速以提高图形性能..."
+sudo apt install mesa-utils  # 安装Mesa工具
+glxinfo | grep "direct rendering"  # 检查硬件加速是否启用
+
 
 
 

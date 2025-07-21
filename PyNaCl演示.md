@@ -1,284 +1,283 @@
-# PyNaCl 完整教程
+# PyNaCl & Cryptography 综合示例教程
 
-> 目的：面向初学者与教学使用，系统性地介绍 PyNaCl（Python bindings for Libsodium）最常见的功能和用法。  
-> 涵盖：对称加密、非对称加密、数字签名、哈希、密码派生、随机数生成、编码（Hex/Base64）以及常见错误处理等。  
+本教程面向初学者，演示在 Python 中使用 PyNaCl（libsodium 绑定）和 Cryptography 库完成以下常见密码学操作：  
+1. AEAD（XChaCha20-Poly1305）  
+2. RSA 非对称加解密与签名／验签  
+3. X25519 密钥交换 + AES-GCM 对称加解密  
+4. Ed25519 签名／验签  
+
+所有示例均可拷贝到 `.py` 文件中直接运行。
 
 ---
 
 ## 目录
 
-1. 环境准备  
-2. 快速入门：Hello, PyNaCl  
-3. 对称加密 / 解密（SecretBox）  
-4. 非对称加密 / 解密（Box）  
-5. 数字签名 / 验签（SigningKey & VerifyKey）  
-6. 哈希计算（BLAKE2b, SHA-256）  
-7. 密码派生（Argon2id KDF）  
-8. 随机数与可读字符串  
-9. 编码与解码（Hex, Base64）  
-10. 错误处理与调试  
-11. 完整示例脚本  
-12. 常见 Q&A  
-13. 参考链接  
+1. 环境依赖  
+2. 示例一：AEAD（XChaCha20-Poly1305）  
+3. 示例二：RSA 非对称加解密与签名  
+4. 示例三：X25519 密钥交换 + AES-GCM  
+5. 示例四：Ed25519 签名／验签  
+6. 完整脚本代码  
+7. 运行结果示例  
 
 ---
 
-## 1. 环境准备
+## 1. 环境依赖
 
-1. 安装 PyNaCl  
-   ```bash
-   pip install pynacl
-   ```
+- Python 3.6+  
+- PyNaCl  
+- Cryptography
 
-2. 如果在 Linux/macOS 上遇到依赖问题，请先安装 libsodium：  
-   - Ubuntu/Debian: `sudo apt-get install libsodium-dev`  
-   - macOS (Homebrew): `brew install libsodium`  
+安装方式：
 
-3. 验证安装  
-   ```python
-   >>> import nacl
-   >>> print(nacl.__version__)
-   ```
-
----
-
-## 2. 快速入门：Hello, PyNaCl
-
-这段代码演示如何生成随机数并打印：
-
-```python
-from nacl import utils
-
-# 生成 16 字节随机数
-rand_bytes = utils.random(16)
-print("随机字节（hex）：", rand_bytes.hex())
+```bash
+pip install pynacl cryptography
 ```
 
-运行后应看到 16 字节的随机值。
+> **提示**：如果在 Linux/macOS 上因缺少 `libsodium` 而安装失败，可先使用包管理器安装：  
+> - Ubuntu/Debian: `sudo apt-get install libsodium-dev`  
+> - macOS (Homebrew): `brew install libsodium`
 
 ---
 
-## 3. 对称加密 / 解密（SecretBox）
+## 2. 示例一：AEAD（XChaCha20-Poly1305）
 
-SecretBox 基于 XSalsa20-Poly1305，提供认证加密。
+使用 libsodium 提供的 XChaCha20-Poly1305 AEAD 接口，既加密又认证。
 
 ```python
-from nacl import secret, utils
+from nacl import utils, bindings
+from nacl.exceptions import CryptoError
 
-# 1. 生成 32 字节对称密钥
-key = utils.random(secret.SecretBox.KEY_SIZE)
-box = secret.SecretBox(key)
+def demo_aead_xchacha20poly1305():
+    print("\n--- AEAD: XChaCha20-Poly1305 ---")
+    msg   = b"Top secret AEAD message"
+    key   = utils.random(bindings.crypto_aead_xchacha20poly1305_ietf_KEYBYTES)
+    nonce = utils.random(bindings.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
+    aad   = b"header-data"
 
-# 2. 准备明文与随机 nonce（24 字节）
-plaintext = b"PyNaCl 对称加密示例"
-nonce = utils.random(secret.SecretBox.NONCE_SIZE)
+    # 加密
+    ciphertext = bindings.crypto_aead_xchacha20poly1305_ietf_encrypt(
+        msg, aad, nonce, key
+    )
+    print("ciphertext:", ciphertext.hex())
 
-# 3. 加密：返回 nonce || 密文 || MAC
-ciphertext = box.encrypt(plaintext, nonce)
-
-# 4. 解密：自动验证 MAC
-decrypted = box.decrypt(ciphertext)
-
-assert decrypted == plaintext
-print("解密成功:", decrypted.decode())
+    # 解密
+    try:
+        plaintext = bindings.crypto_aead_xchacha20poly1305_ietf_decrypt(
+            ciphertext, aad, nonce, key
+        )
+        print("decrypted:", plaintext)
+    except CryptoError:
+        print("AEAD 解密失败")
 ```
 
-- KEY_SIZE = 32，NONCE_SIZE = 24  
-- ciphertext 自带 nonce 信息，也可以手动管理 nonce  
+- `crypto_aead_xchacha20poly1305_ietf_KEYBYTES`：密钥长度 32 字节  
+- `crypto_aead_xchacha20poly1305_ietf_NPUBBYTES`：nonce 长度 24 字节  
+- `aad`（Additional Authenticated Data）可选，用于额外认证头部信息  
 
 ---
 
-## 4. 非对称加密 / 解密（Box）
+## 3. 示例二：RSA 非对称加解密与签名
 
-Box 基于 Curve25519 + XSalsa20-Poly1305，要求双方都有公私钥对。
+借助 `cryptography` 库生成 RSA 密钥对，并演示 OAEP 加解密、PSS 签名／验签。
 
 ```python
-from nacl import public, utils
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes
 
-# 1. 生成发信者与接收者密钥对
-sender_sk = public.PrivateKey.generate()
-sender_pk = sender_sk.public_key
+def demo_rsa_encrypt_decrypt_and_sign():
+    print("\n--- RSA: 非对称加解密 & 签名 ---")
 
-receiver_sk = public.PrivateKey.generate()
-receiver_pk = receiver_sk.public_key
+    # 1. 生成 2048-bit RSA 密钥对
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key  = private_key.public_key()
 
-# 2. 发信者加密
-box_enc = public.Box(sender_sk, receiver_pk)
-cipher = box_enc.encrypt(b"秘密消息")
+    message = b"Hello RSA world!"
 
-# 3. 接收者解密
-box_dec = public.Box(receiver_sk, sender_pk)
-message = box_dec.decrypt(cipher)
+    # 2. RSA-OAEP 加密（SHA-256）
+    ciphertext = public_key.encrypt(
+        message,
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    print("RSA ciphertext (hex):", ciphertext.hex())
 
-print("非对称解密后:", message.decode())
+    # 3. 解密
+    plaintext = private_key.decrypt(
+        ciphertext,
+        padding.OAEP(
+            mgf=padding.MGF1(hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None
+        )
+    )
+    print("RSA decrypted:", plaintext)
+
+    # 4. RSA-PSS 签名（SHA-256）
+    signer = private_key.signer(
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+    signer.update(message)
+    signature = signer.finalize()
+    print("RSA signature:", signature.hex())
+
+    # 5. 验签
+    verifier = public_key.verifier(
+        signature,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        hashes.SHA256()
+    )
+    verifier.update(message)
+    try:
+        verifier.verify()
+        print("RSA signature verified ✅")
+    except Exception:
+        print("RSA signature invalid ❌")
 ```
-
-- `Box.encrypt` 自动生成并附加 nonce  
-- 同一对密钥可多次通信，但每次 encrypt 应使用不同的 nonce  
 
 ---
 
-## 5. 数字签名 / 验签（SigningKey & VerifyKey）
+## 4. 示例三：X25519 密钥交换 + AES-GCM
 
-SigningKey/VerifyKey 基于 Ed25519，签名后可防篡改且不可伪造。
+使用 PyNaCl 的 X25519 算法完成密钥交换，再用 Cryptography 实现 AES-256-GCM 对称加解密。
+
+```python
+import os
+from nacl import public
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+def demo_x25519_with_aes_gcm():
+    print("\n--- X25519 Key Exchange + AES-GCM ---")
+
+    # 1. 生成 X25519 密钥对
+    alice_sk = public.PrivateKey.generate()
+    alice_pk = alice_sk.public_key
+    bob_sk   = public.PrivateKey.generate()
+    bob_pk   = bob_sk.public_key
+
+    # 2. 交换公钥，计算 shared secret
+    shared_ab = alice_sk.exchange(bob_pk)
+    shared_ba = bob_sk.exchange(alice_pk)
+    assert shared_ab == shared_ba
+
+    # 3. 派生 AES-256-GCM 密钥：对 shared_secret 做 SHA256
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(shared_ab)
+    aes_key = digest.finalize()  # 32 字节
+
+    # 4. AES-GCM 加密
+    iv        = os.urandom(12)
+    plaintext = b"Confidential via AES-GCM"
+    encryptor = Cipher(
+        algorithms.AES(aes_key),
+        modes.GCM(iv),
+    ).encryptor()
+    encryptor.authenticate_additional_data(b"header-aes")
+    ct  = encryptor.update(plaintext) + encryptor.finalize()
+    tag = encryptor.tag
+    print("AES-GCM ciphertext:", ct.hex(), " tag:", tag.hex())
+
+    # 5. AES-GCM 解密
+    decryptor = Cipher(
+        algorithms.AES(aes_key),
+        modes.GCM(iv, tag),
+    ).decryptor()
+    decryptor.authenticate_additional_data(b"header-aes")
+    pt = decryptor.update(ct) + decryptor.finalize()
+    print("AES-GCM decrypted:", pt)
+```
+
+---
+
+## 5. 示例四：Ed25519 签名／验签
+
+纯 PyNaCl 实现 Ed25519 数字签名与验证。
 
 ```python
 from nacl import signing
+from nacl.exceptions import CryptoError
 
-# 1. 生成签名密钥对
-signing_key = signing.SigningKey.generate()
-verify_key = signing_key.verify_key
+def demo_ed25519_sign_verify():
+    print("\n--- Ed25519 签名 / 验签 ---")
 
-# 2. 原始消息
-message = b"PyNaCl 数字签名示例"
+    # 1. 生成密钥对
+    sk = signing.SigningKey.generate()
+    vk = sk.verify_key
 
-# 3. 签名：返回 签名 || 原文
-signed = signing_key.sign(message)
+    # 2. 签名
+    msg    = b"Data to sign with Ed25519"
+    signed = sk.sign(msg)
+    print("Signed message:", signed.hex())
 
-# 4. 验签
-verified = verify_key.verify(signed)  # 验证 MAC 并返回原文
-
-assert verified == message
-print("签名验证成功:", verified.decode())
+    # 3. 验签
+    try:
+        verified = vk.verify(signed)
+        print("Verified message:", verified)
+    except CryptoError:
+        print("Ed25519 验签失败")
 ```
-
-- `sign` 方法将签名和消息拼接在一起  
-- `verify` 方法自动分离并验证签名  
 
 ---
 
-## 6. 哈希计算（BLAKE2b, SHA-256）
+## 6. 完整脚本代码
+
+将以上示例函数集合到一个文件 `crypto_demos.py`，并在主函数中依次调用：
 
 ```python
-from nacl import hash
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-data = b"hello hashing"
+import os
+from nacl import utils, bindings, public, signing
+from nacl.exceptions import CryptoError
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-# BLAKE2b，digest_size 最多 64
-h1 = hash.blake2b(data, digest_size=32)
-print("BLAKE2b-32:", h1.hex())
+# （将前面 demo_xxx 函数粘贴到此处）
 
-# SHA-256
-h2 = hash.sha256(data)
-print("SHA-256 :", h2.hex())
-```
-
-- BLAKE2b：更快、更安全，可自定义输出长度  
-- 还支持 `hash.sha512`、`hash.blake2s` 等  
-
----
-
-## 7. 密码派生（Argon2id KDF）
-
-Argon2id 是现代安全推荐的密码哈希算法。
-
-```python
-from nacl import pwhash, utils
-
-password = b"my secret password"
-salt = utils.random(pwhash.argon2id.SALT_SIZE)
-
-# 派生 32 字节密钥
-key = pwhash.argon2id.kdf(
-    size=32,
-    password=password,
-    salt=salt,
-    opslimit=pwhash.argon2id.OPSLIMIT_MODERATE,
-    memlimit=pwhash.argon2id.MEMLIMIT_MODERATE
-)
-
-print("派生密钥 (hex)：", key.hex())
-```
-
-- `opslimit` 与 `memlimit` 控制时间与内存成本  
-- 用于生成对称加密密钥或存储口令散列  
-
----
-
-## 8. 随机数与可读字符串
-
-```python
-from nacl import utils, encoding
-
-# 生成 24 字节
-raw = utils.random(24)
-
-# Hex 编码
-hex_str = encoding.HexEncoder.encode(raw).decode()
-# Base64 编码
-b64_str = encoding.Base64Encoder.encode(raw).decode()
-
-print("Hex     :", hex_str)
-print("Base64  :", b64_str)
-```
-
-- Raw bytes 常用于密钥/nonce  
-- 通过 Hex/Base64 转为可存储的字符串  
-
----
-
-## 9. 编码与解码（Hex, Base64）
-
-```python
-from nacl import encoding
-
-hex_str = "4a6f686e"  # "John"
-data = encoding.HexEncoder.decode(hex_str)
-print(data.decode())  # John
-
-b64 = "Sm9obg=="
-print(encoding.Base64Encoder.decode(b64).decode())
+if __name__ == "__main__":
+    demo_aead_xchacha20poly1305()
+    demo_rsa_encrypt_decrypt_and_sign()
+    demo_x25519_with_aes_gcm()
+    demo_ed25519_sign_verify()
 ```
 
 ---
 
-## 10. 错误处理与调试
+## 7. 运行结果示例
 
-- 对称/非对称解密异常  
-  ```python
-  from nacl.exceptions import CryptoError
+```
+--- AEAD: XChaCha20-Poly1305 ---
+ciphertext: 5f3c… (hex)
+decrypted: b'Top secret AEAD message'
 
-  try:
-      plaintext = box.decrypt(bad_cipher)
-  except CryptoError:
-      print("解密失败：数据被篡改或密钥/nonce 不匹配")
-  ```
+--- RSA: 非对称加解密 & 签名 ---
+RSA ciphertext (hex): ab12…ef
+RSA decrypted: b'Hello RSA world!'
+RSA signature: 3045…a1
+RSA signature verified ✅
 
-- 签名验证失败  
-  ```python
-  try:
-      verify_key.verify(bad_signed)
-  except CryptoError:
-      print("验签失败：签名不合法或消息被篡改")
-  ```
+--- X25519 Key Exchange + AES-GCM ---
+AES-GCM ciphertext: 7e9b… tag: d2c3…
+AES-GCM decrypted: b'Confidential via AES-GCM'
 
----
-
-## 11. 完整示例脚本
-
-请参见 `example_pynacl_full.py`（已附在本目录），包含以上所有演示，每个函数都有详细注释，直接运行即可。
+--- Ed25519 签名 / 验签 ---
+Signed message: d2a4…fea3
+Verified message: b'Data to sign with Ed25519'
+```
 
 ---
 
-## 12. 常见 Q&A
-
-Q1: 为何对称加密要分开 key 和 nonce？  
-A1: nonce 保证每次加密的唯一性，防止重放和密码复用。
-
-Q2: 如何安全地管理密钥？  
-A2: 将密钥存储在安全的密钥管理系统（KMS）或使用硬件安全模块（HSM），切勿将原文或密钥硬编码在源代码中。
-
-Q3: Argon2id 参数如何选择？  
-A3: 根据业务场景与硬件环境平衡安全和性能，可参考 libsodium 官方文档推荐的 `OPSLIMIT_MODERATE` / `MEMLIMIT_MODERATE`。
-
----
-
-## 13. 参考链接
-
-- PyNaCl 官方文档：https://pynacl.readthedocs.io  
-- libsodium 官方文档：https://libsodium.gitbook.io  
-- Ed25519 & Curve25519 简介：https://cr.yp.to/  
-
----
-
-> 通过本教程，你应当熟悉 PyNaCl 的主流加密原语及其在实际工程中的基本用法。在教学或项目中，可据此扩展更多高级特性（如 sealed box、密钥封装、高级流式接口等）。祝学习愉快！
+通过本教程，你可以快速掌握 PyNaCl 与 Cryptography 中几种主流的加密、签名及密钥交换操作。后续可根据需求进一步扩展：使用 KDF 强化密钥派生、引入 sealed box、密钥封装等高级特性。祝学习愉快！

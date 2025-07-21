@@ -1,239 +1,235 @@
-import os
-import json
-import base64
-import struct
-import stat
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-# --- ChaCha20 Implementation (同前) ---
+import os, sys, json, base64, struct, stat, secrets
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def rotate(v, c):
-    return ((v << c) & 0xffffffff) | (v >> (32 - c))
+# ——————————————————————————————————————————————————————————————————————
+# 1) ChaCha20 基本函数
+# ——————————————————————————————————————————————————————————————————————
+def rotl32(v, c):
+    return ((v << c) & 0xffffffff) | (v >> (32 - c))              # 32-bit 循环左移
 
-def quarter_round(state, a, b, c, d):
-    state[a] = (state[a] + state[b]) & 0xffffffff
-    state[d] ^= state[a]
-    state[d] = rotate(state[d], 16)
+def quarter_round(a, b, c, d):
+    a = (a + b) & 0xffffffff; d ^= a; d = rotl32(d, 16)
+    c = (c + d) & 0xffffffff; b ^= c; b = rotl32(b, 12)
+    a = (a + b) & 0xffffffff; d ^= a; d = rotl32(d, 8)
+    c = (c + d) & 0xffffffff; b ^= c; b = rotl32(b, 7)
+    return a, b, c, d                                          # 返回更新后的四个状态字
 
-    state[c] = (state[c] + state[d]) & 0xffffffff
-    state[b] ^= state[c]
-    state[b] = rotate(state[b], 12)
+def chacha20_block(key: bytes, counter: int, nonce: bytes) -> bytes:
+    const = b"expa" b"nd 3" b"2-by" b"te k"                     # ChaCha20 常量
+    s0, s1, s2, s3 = struct.unpack("<4I", const)               # 解包成 4 个 32-bit
+    k0, k1, k2, k3, k4, k5, k6, k7 = struct.unpack("<8I", key)  # 解包 8 个 key word
+    n0, n1, n2 = struct.unpack("<3I", nonce)                   # 解包 3 个 nonce word
+    state = [s0, s1, s2, s3, k0, k1, k2, k3, k4, k5, k6, k7, counter, n0, n1, n2]
+    working = state.copy()
+    for _ in range(10):                                         # 20 轮 (10 次 column+diagonal)
+        # column rounds
+        working[0], working[4], working[8],  working[12] = quarter_round(*[working[i] for i in (0,4,8,12)])
+        working[1], working[5], working[9],  working[13] = quarter_round(*[working[i] for i in (1,5,9,13)])
+        working[2], working[6], working[10], working[14] = quarter_round(*[working[i] for i in (2,6,10,14)])
+        working[3], working[7], working[11], working[15] = quarter_round(*[working[i] for i in (3,7,11,15)])
+        # diagonal rounds
+        working[0], working[5], working[10], working[15] = quarter_round(*[working[i] for i in (0,5,10,15)])
+        working[1], working[6], working[11], working[12] = quarter_round(*[working[i] for i in (1,6,11,12)])
+        working[2], working[7], working[8],  working[13] = quarter_round(*[working[i] for i in (2,7,8,13)])
+        working[3], working[4], working[9],  working[14] = quarter_round(*[working[i] for i in (3,4,9,14)])
+    out = [(working[i] + state[i]) & 0xffffffff for i in range(16)]
+    return struct.pack("<16I", *out)                            # 返回 64 字节的 keystream block
 
-    state[a] = (state[a] + state[b]) & 0xffffffff
-    state[d] ^= state[a]
-    state[d] = rotate(state[d], 8)
+def chacha20_xor(key: bytes, nonce: bytes, counter: int, data: bytes) -> bytes:
+    buf = bytearray(len(data))
+    i = 0
+    while i < len(data):
+        block = chacha20_block(key, counter, nonce)
+        chunk = data[i:i+64]
+        for j in range(len(chunk)):
+            buf[i+j] = chunk[j] ^ block[j]
+        i += 64
+        counter += 1
+    return bytes(buf)                                           # 对 data 做流式异或加解密
 
-    state[c] = (state[c] + state[d]) & 0xffffffff
-    state[b] ^= state[c]
-    state[b] = rotate(state[b], 7)
+# ——————————————————————————————————————————————————————————————————————
+# 2) Poly1305 基本函数
+# ——————————————————————————————————————————————————————————————————————
+def clamp_r(r: bytearray) -> bytearray:
+    r[3]  &= 15; r[7]  &= 15; r[11] &= 15; r[15] &= 15
+    r[4]  &= 252; r[8]  &= 252; r[12] &= 252
+    return r                                                    # 对 r 做 bit 掩码 (clamp)
 
-def chacha20_block(key, counter, nonce):
-    constants = b"expand 32-byte k"
-    assert len(key) == 32
-    assert len(nonce) == 12
-    state = list(struct.unpack("<4I8I3I", constants + key + nonce))
-    state[12] = counter
-    working_state = state[:]
-    for _ in range(10):
-        quarter_round(working_state, 0, 4, 8, 12)
-        quarter_round(working_state, 1, 5, 9, 13)
-        quarter_round(working_state, 2, 6, 10, 14)
-        quarter_round(working_state, 3, 7, 11, 15)
-        quarter_round(working_state, 0, 5, 10, 15)
-        quarter_round(working_state, 1, 6, 11, 12)
-        quarter_round(working_state, 2, 7, 8, 13)
-        quarter_round(working_state, 3, 4, 9, 14)
-    out = []
-    for i in range(16):
-        out.append((working_state[i] + state[i]) & 0xffffffff)
-    return struct.pack("<16I", *out)
-
-def chacha20_encrypt(key, nonce, counter, plaintext):
-    encrypted = bytearray(len(plaintext))
-    for i in range(0, len(plaintext), 64):
-        block = chacha20_block(key, counter + (i // 64), nonce)
-        block_bytes = block[:min(64, len(plaintext) - i)]
-        for j in range(len(block_bytes)):
-            encrypted[i + j] = plaintext[i + j] ^ block_bytes[j]
-    return bytes(encrypted)
-
-# --- Poly1305 Implementation (同前) ---
-
-def le_bytes_to_num(b):
-    return sum((b[i] << (8 * i)) for i in range(len(b)))
-
-def num_to_16_le_bytes(n):
-    return bytes((n >> (8 * i)) & 0xff for i in range(16))
-
-def poly1305_clamp(r):
-    r_list = list(r)
-    r_list[3] &= 15
-    r_list[7] &= 15
-    r_list[11] &= 15
-    r_list[15] &= 15
-    r_list[4] &= 252
-    r_list[8] &= 252
-    r_list[12] &= 252
-    return bytes(r_list)
-
-def poly1305_mac(msg, key):
-    r = key[:16]
-    s = key[16:]
-    r = poly1305_clamp(r)
-    r_num = le_bytes_to_num(r)
-    s_num = le_bytes_to_num(s)
+def poly1305_mac(key: bytes, msg: bytes) -> bytes:
+    r = clamp_r(bytearray(key[:16]))                           # r 部分
+    s = int.from_bytes(key[16:], "little")                      # s 部分
+    r_num = int.from_bytes(r, "little")
     p = (1 << 130) - 5
     acc = 0
     for i in range(0, len(msg), 16):
-        chunk = msg[i:i + 16]
-        n = le_bytes_to_num(chunk + b'\x01')
-        acc = (acc + n) % p
-        acc = (acc * r_num) % p
-    acc = (acc + s_num) % (1 << 128)
-    return num_to_16_le_bytes(acc)
+        chunk = msg[i:i+16]
+        n = int.from_bytes(chunk + b"\x01", "little")
+        acc = (acc + n) * r_num % p
+    tag = (acc + s) & ((1 << 128) - 1)
+    return tag.to_bytes(16, "little")                           # 16 字节 Tag
 
-def pad16(data):
-    if len(data) % 16 == 0:
-        return data
-    return data + b'\x00' * (16 - (len(data) % 16))
+def pad16(data: bytes) -> bytes:
+    rem = len(data) % 16
+    return data if rem == 0 else data + b"\x00" * (16-rem)     # 16 字节边界对齐
 
-def poly1305_input(ciphertext):
-    # 无aad，仅拼接 ciphertext + padding + 8字节0 + 8字节长度
-    ct_padded = pad16(ciphertext)
-    # 因无AAD，单8字节0代表空AAD长度，最后8字节是密文长度
-    aad_len = struct.pack("<Q", 0)
-    ct_len = struct.pack("<Q", len(ciphertext))
-    return b'' + ct_padded + aad_len + ct_len
+def make_poly_input(ct: bytes) -> bytes:
+    return ct + pad16(ct) + struct.pack("<Q", 0) + struct.pack("<Q", len(ct))
+                                                                # ciphertext || pad || AAD_len=0 || CT_len
 
-# --- ChaCha20-Poly1305 AEAD 简化版本，无AAD ---
+# ——————————————————————————————————————————————————————————————————————
+# 3) AEAD: ChaCha20-Poly1305 (No AAD)
+# ——————————————————————————————————————————————————————————————————————
+def aead_encrypt(key: bytes, data: bytes):
+    nonce = secrets.token_bytes(12)                             # 随机 12 字节 Nonce
+    otk = chacha20_block(key, 0, nonce)[:32]                    # Poly1305 一次性 key
+    ct = chacha20_xor(key, nonce, 1, data)                      # 从 counter=1 开始加密
+    tag = poly1305_mac(otk, make_poly_input(ct))                # 计算 Tag
+    return nonce, ct, tag                                       # 返回三元组
 
-def chacha20_poly1305_encrypt(key, nonce, plaintext):
-    poly_key = chacha20_block(key, 0, nonce)[:32]
-    ciphertext = chacha20_encrypt(key, nonce, 1, plaintext)
-    mac_data = poly1305_input(ciphertext)
-    tag = poly1305_mac(mac_data, poly_key)
-    return ciphertext, tag
+def aead_decrypt(key: bytes, nonce: bytes, ct: bytes, tag: bytes) -> bytes:
+    otk = chacha20_block(key, 0, nonce)[:32]
+    if poly1305_mac(otk, make_poly_input(ct)) != tag:
+        raise ValueError("Poly1305 tag 校验失败")
+    return chacha20_xor(key, nonce, 1, ct)                      # 验证通过后解密
 
-def chacha20_poly1305_decrypt(key, nonce, ciphertext, tag):
-    poly_key = chacha20_block(key, 0, nonce)[:32]
-    mac_data = poly1305_input(ciphertext)
-    calc_tag = poly1305_mac(mac_data, poly_key)
-    if calc_tag != tag:
-        raise ValueError("认证失败：Poly1305 tag 不匹配")
-    plaintext = chacha20_encrypt(key, nonce, 1, ciphertext)
-    return plaintext
-
-# --- 文件时间戳和权限备份/恢复 ---
-
-def backup_file_times(filepath):
-    stat_res = os.stat(filepath)
-    return (stat_res.st_atime, stat_res.st_mtime)
-
-def restore_file_times(filepath, times):
-    os.utime(filepath, times=times)
-
-def backup_file_mode(filepath):
-    return stat.S_IMODE(os.stat(filepath).st_mode)
-
-def restore_file_mode(filepath, mode):
-    os.chmod(filepath, mode)
-
-# --- 结构化JSON写入尾部设计 ---
-
+# ——————————————————————————————————————————————————————————————————————
+# 4) 文件权限/时间备份 & JSON 尾部 编码/解码
+# ——————————————————————————————————————————————————————————————————————
 END_MARKER = b"###END###"
 
-def encode_tail(nonce: bytes, tag: bytes) -> bytes:
-    # base64编码nonce和tag
-    payload = {
-        "nonce": base64.b64encode(nonce).decode('utf-8'),
-        "tag": base64.b64encode(tag).decode('utf-8'),
-    }
-    json_bytes = json.dumps(payload, separators=(',', ':')).encode('utf-8')
-    return json_bytes + END_MARKER
+def backup_times(path):
+    s = os.stat(path)
+    return (s.st_atime, s.st_mtime)                             # 备份访问、修改时间
 
-def decode_tail(data: bytes):
-    # 从尾部找END_MARKER，取左侧JSON部分解析
-    idx = data.rfind(END_MARKER)
-    if idx == -1:
-        raise ValueError("文件尾部找不到结束标志")
-    json_bytes = data[idx - 1024 if idx >= 1024 else 0:idx]
-    # 尝试向前扩展直到能成功json.loads
-    # 因json大小不确定，向前逐步扩大查找合理json
-    # 简单办法从较早位置开始尝试截断
-    for start in range(max(0, idx-1024), -1, -1):
+def restore_times(path, times):
+    os.utime(path, times=times)                                 # 恢复时间
+
+def backup_mode(path):
+    return stat.S_IMODE(os.stat(path).st_mode)                  # 备份权限模式
+
+def restore_mode(path, mode):
+    os.chmod(path, mode)                                        # 恢复权限模式
+
+def encode_tail(nonce: bytes, tag: bytes) -> bytes:
+    payload = {
+        "nonce": base64.b64encode(nonce).decode(),
+        "tag":   base64.b64encode(tag).decode()
+    }
+    j = json.dumps(payload, separators=(",",":")).encode("utf-8")
+    return j + END_MARKER                                       # JSON + 结束标记
+
+def decode_tail(blob: bytes):
+    idx = blob.rfind(END_MARKER)
+    if idx < 0:
+        raise ValueError("未找到 END_MARKER")
+    # 从 idx-4096 到 idx 这段数据内搜索合法 JSON
+    start = max(0, idx-4096)
+    segment = blob[start:idx]
+    for off in range(len(segment)):
         try:
-            cur_json = data[start:idx]
-            payload = json.loads(cur_json.decode('utf-8'))
+            doc = segment[off:].decode("utf-8")
+            payload = json.loads(doc)
             nonce = base64.b64decode(payload["nonce"])
-            tag = base64.b64decode(payload["tag"])
-            return nonce, tag, start, idx + len(END_MARKER)
+            tag   = base64.b64decode(payload["tag"])
+            return nonce, tag, start+off, idx+len(END_MARKER)
         except Exception:
             continue
-    raise ValueError("解析JSON尾部失败")
+    raise ValueError("JSON 尾部解析失败")
 
-# --- 加密 / 解密 主功能 ---
-
-def encrypt_file(filepath, key):
-    with open(filepath, 'rb') as f:
-        plaintext = f.read()
-
-    nonce = os.urandom(12)
-    ciphertext, tag = chacha20_poly1305_encrypt(key, nonce, plaintext)
-
-    times = backup_file_times(filepath)
-    mode = backup_file_mode(filepath)
-
-    tail = encode_tail(nonce, tag)
-
-    with open(filepath, 'wb') as f:
-        f.write(ciphertext)
-        f.write(tail)
-
-    restore_file_times(filepath, times)
-    restore_file_mode(filepath, mode)
-
-def decrypt_file(filepath, key):
-    with open(filepath, 'rb') as f:
-        data = f.read()
-
-    nonce, tag, json_start, json_end = decode_tail(data)
-    ciphertext = data[:json_start]
-
-    times = backup_file_times(filepath)
-    mode = backup_file_mode(filepath)
-
-    plaintext = chacha20_poly1305_decrypt(key, nonce, ciphertext, tag)
-
-    with open(filepath, 'wb') as f:
-        f.write(plaintext)
-
-    restore_file_times(filepath, times)
-    restore_file_mode(filepath, mode)
-
-# --- 主交互 ---
-
-def main():
-    print("请输入操作模式：\n1. 加密\n2. 解密")
-    mode = input("输入1或2：").strip()
-    if mode not in ("1", "2"):
-        print("无效输入，程序退出")
-        return
-    filepath = input("请输入文件路径：").strip()
-    if not os.path.isfile(filepath):
-        print("文件不存在")
-        return
-
-    key = b'\x01' * 32  # 请换成安全密钥
-
+# ——————————————————————————————————————————————————————————————————————
+# 5) 单文件 加密/解密 处理函数
+# ——————————————————————————————————————————————————————————————————————
+def process_enc(path: str, key: bytes) -> str:
     try:
-        if mode == "1":
-            encrypt_file(filepath, key)
-            print("加密完成，文件已原地替换。JSON尾部包含nonce和tag。")
-        else:
-            decrypt_file(filepath, key)
-            print("解密完成，文件已原地替换。")
+        data = open(path,"rb").read()                           # 读文件
+        nonce, ct, tag = aead_encrypt(key, data)                # 加密
+        tail = encode_tail(nonce, tag)                          # 编码尾部
+        times, mode = backup_times(path), backup_mode(path)     # 备份
+        with open(path,"wb") as f:
+            f.write(ct); f.write(tail)                          # 写入 ct + tail
+        restore_times(path, times); restore_mode(path, mode)    # 恢复
+        return None
     except Exception as e:
-        print("操作出错:", e)
+        return str(e)
 
+def process_dec(path: str, key: bytes) -> str:
+    try:
+        blob = open(path,"rb").read()                           # 读文件
+        nonce, tag, split, end = decode_tail(blob)             # 解尾部
+        ct = blob[:split]
+        pt = aead_decrypt(key, nonce, ct, tag)                  # 解密
+        times, mode = backup_times(path), backup_mode(path)     # 备份
+        with open(path,"wb") as f:
+            f.write(pt)                                         # 写入明文
+        restore_times(path, times); restore_mode(path, mode)    # 恢复
+        return None
+    except Exception as e:
+        return str(e)
+
+# ——————————————————————————————————————————————————————————————————————
+# 6) 目录遍历 & 并发调度
+# ——————————————————————————————————————————————————————————————————————
+def gather_files(root: str):
+    lst = []
+    for base, _, files in os.walk(root):
+        for fn in files:
+            lst.append(os.path.join(base, fn))
+    return lst
+
+# ——————————————————————————————————————————————————————————————————————
+# 7) 主程序入口
+# ——————————————————————————————————————————————————————————————————————
+def main():
+    # 交互：enc / dec
+    mode = ""
+    while mode not in ("enc","dec"):
+        mode = input("请选择模式 enc(加密) / dec(解密)：").strip().lower()
+    # 交互：目录
+    root = input("请输入要操作的目录：").strip()
+    if not os.path.isdir(root):
+        print("目录不存在，退出。"); sys.exit(1)
+    # 交互：Hex Key
+    key_hex = input("请输入 32 字节十六进制密钥：").strip()
+    try:
+        key = bytes.fromhex(key_hex)
+    except:
+        print("密钥格式错误，退出。"); sys.exit(1)
+    if len(key) != 32:
+        print("密钥长度非 32 字节，退出。"); sys.exit(1)
+    # 交互：线程数
+    try:
+        threads = int(input("请输入并发线程数 (≥1)：").strip())
+        if threads < 1: raise ValueError
+    except:
+        print("线程数错误，退出。"); sys.exit(1)
+
+    files = gather_files(root)
+    if not files:
+        print("目录无文件，退出。"); sys.exit(0)
+
+    print(f"开始 { '加密' if mode=='enc' else '解密' } {len(files)} 个文件，{threads} 线程并发…")
+    errors = []
+
+    with ThreadPoolExecutor(max_workers=threads) as exe:
+        futures = {
+            exe.submit(process_enc if mode=='enc' else process_dec, path, key): path 
+            for path in files
+        }
+        for fut in as_completed(futures):
+            err = fut.result()
+            if err:
+                errors.append((futures[fut], err))
+
+    if errors:
+        print("\n以下文件处理失败：", file=sys.stderr)
+        for p, e in errors:
+            print(f"{p} 失败原因：{e}", file=sys.stderr)
+        sys.exit(1)
+    else:
+        print("全部处理完成。")
 
 if __name__ == "__main__":
     main()

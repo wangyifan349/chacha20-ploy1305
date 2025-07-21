@@ -31,6 +31,9 @@ ChaCha20-Poly1305 in Pure Python (Educational)
 
 ---
 
+first, use a 32-byte key, 12-byte nonce, and 32-bit counter to drive the ChaCha20 block function, which performs 20 rounds of “column + diagonal” operations (each round consists of four quarter-rounds) to generate a 64-byte keystream; encryption is then done by XORing the plaintext with this keystream. Next, the entire ciphertext is authenticated with Poly1305: derive a one-time 32-byte key r∥s from ChaCha20(counter=0), split the data into 16-byte blocks (appending 0x01 at the end of each), and perform modular addition and multiplication in the field 2¹³⁰–5 before finally adding s to produce the 16-byte tag. During decryption, the same ChaCha20(counter=0) derivation is repeated to recompute r∥s and verify the tag (using a constant-time comparison), and then ChaCha20(counter=1) regenerates the keystream to XOR the ciphertext back into the original plaintext.
+
+
 ## 2. Complete Code with Encryption & Decryption
 
 ```python

@@ -1,0 +1,19 @@
+[package]
+name     = "batch_encrypt_gui"
+version  = "0.1.0"
+edition  = "2021"
+resolver = "2"
+
+[dependencies]
+eframe             = "0.24"
+rfd                = "0.14"
+crossbeam-channel  = "0.5"
+chacha20poly1305   = { version = "0.10", features = ["rand_core"] }
+sha2               = "0.10"
+rand               = "0.9"
+rayon              = "1.10"
+walkdir            = "2.5"
+anyhow             = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "windef", "shellscalingapi"] }

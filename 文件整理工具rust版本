@@ -1,0 +1,207 @@
+[package]
+name = "file_organizer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha2 = "0.10"
+walkdir = "2.3"
+dialoguer = "0.10"
+
+[profile.release]
+opt-level = "z"          # 压缩大小最大
+lto = true               # 启用链接时优化（Link Time Optimization）
+debug = false            # 禁止生成调试信息
+strip = true             # 移除符号表
+panic = "abort"          # 最小化 panic 体积
+
+
+
+
+
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
+use dialoguer::{theme::ColorfulTheme, Select};
+
+/// 文件类型映射
+fn file_types() -> HashMap<&'static str, Vec<&'static str>> {
+    let mut types = HashMap::new();
+    types.insert("图片", vec![".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp"]);
+    types.insert("视频", vec![".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"]);
+    types.insert("音频", vec![".mp3", ".wav", ".aac", ".flac", ".ogg"]);
+    types.insert("压缩文件", vec![".zip", ".rar", ".7z", ".tar", ".gz", ".bz2"]);
+    types
+}
+
+/// 计算文件 SHA-256
+fn calculate_sha256(file_path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(file_path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// 删除重复文件
+fn delete_duplicate_files(root_path: &Path) -> io::Result<()> {
+    println!("开始删除重复文件...");
+    let mut hash_map: HashMap<String, PathBuf> = HashMap::new();
+
+    for entry in WalkDir::new(root_path).into_iter().filter_map(Result::ok) {
+        let file_path = entry.path();
+        if file_path.is_file() {
+            match calculate_sha256(file_path) {
+                Ok(file_hash) => {
+                    if hash_map.contains_key(&file_hash) {
+                        println!("删除重复文件: {}", file_path.display());
+                        fs::remove_file(file_path)?;
+                    } else {
+                        hash_map.insert(file_hash, file_path.to_path_buf());
+                    }
+                }
+                Err(err) => {
+                    println!("无法读取文件 {}: {}", file_path.display(), err);
+                }
+            }
+        }
+    }
+    println!("重复文件处理完成。");
+    Ok(())
+}
+
+/// 自动生成唯一文件名，避免覆盖
+fn generate_unique_filename(target_dir: &Path, filename: &str) -> PathBuf {
+    let mut counter = 1;
+    let mut target_path = target_dir.join(filename);
+    while target_path.exists() {
+        let stem = Path::new(filename)
+            .file_stem()
+            .unwrap()
+            .to_string_lossy();
+        let extension = Path::new(filename)
+            .extension()
+            .map_or("", |e| e.to_string_lossy().as_ref());
+        let new_name = if extension.is_empty() {
+            format!("{}_{}", stem, counter)
+        } else {
+            format!("{}_{}.{}", stem, counter, extension)
+        };
+        target_path = target_dir.join(new_name);
+        counter += 1;
+    }
+    target_path
+}
+
+/// 按类型整理文件
+fn organize_files_by_type(root_path: &Path) -> io::Result<()> {
+    println!("开始整理文件类型...");
+    let types = file_types();
+
+    for entry in WalkDir::new(root_path).into_iter().filter_map(Result::ok) {
+        let file_path = entry.path();
+        if file_path.is_file() {
+            if let Some(ext) = file_path.extension().and_then(|e| e.to_str()) {
+                let ext_lower = format!(".{}", ext.to_lowercase());
+                for (folder_name, extensions) in &types {
+                    if extensions.contains(&ext_lower.as_str()) {
+                        let target_dir = root_path.join(folder_name);
+                        fs::create_dir_all(&target_dir)?;
+                        let file_name = file_path.file_name().unwrap().to_string_lossy();
+                        let dest_path = generate_unique_filename(&target_dir, &file_name);
+                        println!("移动文件 {} -> {}", file_path.display(), dest_path.display());
+                        fs::rename(file_path, dest_path)?;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    println!("文件整理完成。");
+    Ok(())
+}
+
+/// 删除空文件夹
+fn delete_empty_folders(root_path: &Path) -> io::Result<()> {
+    println!("开始删除空文件夹...");
+    let mut folders: Vec<PathBuf> = WalkDir::new(root_path)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_dir())
+        .map(|e| e.into_path())
+        .collect();
+
+    folders.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+
+    for folder in folders {
+        if folder.read_dir()?.next().is_none() {
+            println!("删除空文件夹: {}", folder.display());
+            fs::remove_dir(&folder)?;
+        }
+    }
+    println!("空文件夹处理完成。");
+    Ok(())
+}
+
+/// 一键整理功能
+fn full_cleanup(root_path: &Path) {
+    if let Err(err) = delete_duplicate_files(root_path) {
+        println!("删除重复文件失败: {}", err);
+    }
+    if let Err(err) = organize_files_by_type(root_path) {
+        println!("整理文件类型失败: {}", err);
+    }
+    if let Err(err) = delete_empty_folders(root_path) {
+        println!("删除空文件夹失败: {}", err);
+    }
+    println!("整理完成。");
+}
+
+fn main() {
+    println!("请输入要整理的目录路径:");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).unwrap();
+    let root_path = PathBuf::from(input.trim());
+
+    if !root_path.exists() || !root_path.is_dir() {
+        println!("路径无效，请输入有效文件夹路径。");
+        return;
+    }
+
+    loop {
+        let menu_items = vec![
+            "一键整理（删除重复 + 分类 + 删除空文件夹）",
+            "删除重复文件",
+            "按类型整理文件",
+            "删除空文件夹",
+            "退出",
+        ];
+
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("请选择操作")
+            .default(0)
+            .items(&menu_items)
+            .interact()
+            .unwrap();
+
+        match selection {
+            0 => full_cleanup(&root_path),
+            1 => { delete_duplicate_files(&root_path).unwrap(); },
+            2 => { organize_files_by_type(&root_path).unwrap(); },
+            3 => { delete_empty_folders(&root_path).unwrap(); },
+            4 => break,
+            _ => {},
+        }
+    }
+
+    println!("程序结束。");
+}

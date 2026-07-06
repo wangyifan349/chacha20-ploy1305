@@ -118,11 +118,11 @@ def poly1305_mac(key: bytes, message: bytes) -> bytes:
     return tag_value.to_bytes(16, "little")
 
 def pad16(data: bytes) -> bytes:
-    """Pad data to a 16-byte boundary."""
+    """Return only the zero padding needed to align data to a 16-byte boundary."""
     remainder = len(data) % 16
     if remainder == 0:
-        return data
-    return data + b"\x00" * (16 - remainder)
+        return b""
+    return b"\x00" * (16 - remainder)
 
 def make_poly_input(ciphertext: bytes) -> bytes:
     """Build the Poly1305 input for ChaCha20-Poly1305 without AAD."""

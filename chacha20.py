@@ -33,7 +33,7 @@ def quarter_round(a, b, c, d):
 
 def chacha20_block(key: bytes, counter: int, nonce: bytes) -> bytes:
     """Generate one 64-byte ChaCha20 keystream block."""
-    constant = b"expa" b"nd 3" b"2-by" b"te k"
+    constant = b"expand 32-byte k"
     constant_0, constant_1, constant_2, constant_3 = struct.unpack("<4I", constant)
     key_0, key_1, key_2, key_3, key_4, key_5, key_6, key_7 = struct.unpack("<8I", key)
     nonce_0, nonce_1, nonce_2 = struct.unpack("<3I", nonce)
